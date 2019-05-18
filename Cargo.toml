@@ -1,0 +1,9 @@
+[package]
+name = "trezor-sq"
+version = "0.0.1"
+authors = ["Roman Zeyde <me@romanzey.de>"]
+edition = "2018"
+
+[dependencies]
+sequoia-openpgp = "0.7"
+subprocess = "0.1"
