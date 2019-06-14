@@ -3,7 +3,7 @@ use std::env;
 use std::io;
 
 extern crate sequoia_openpgp as openpgp;
-extern crate subprocess;
+extern crate trezor;
 
 use openpgp::armor;
 use openpgp::constants::DataFormat;
@@ -13,7 +13,19 @@ use openpgp::packet::Key;
 use openpgp::parse::Parse;
 use openpgp::serialize::stream;
 use openpgp::TPK;
-use openpgp::{Error, Result};
+
+fn handle_interaction<T, R: trezor::TrezorMessage>(
+    resp: trezor::TrezorResponse<T, R>,
+) -> Result<T, trezor::Error> {
+    match resp {
+        trezor::TrezorResponse::Ok(res) => Ok(res),
+        trezor::TrezorResponse::Failure(_) => resp.ok(), // assering ok() returns the failure error
+        trezor::TrezorResponse::ButtonRequest(req) => handle_interaction(req.ack()?),
+        trezor::TrezorResponse::PinMatrixRequest(_req) => panic!("TREZOR is locked"),
+        trezor::TrezorResponse::PassphraseRequest(_req) => panic!("TREZOR has passphrase"),
+        trezor::TrezorResponse::PassphraseStateRequest(_req) => panic!("TREZOR has passphrase"),
+    }
+}
 
 struct ExternalSigner {
     sigkey: Key,
@@ -21,7 +33,7 @@ struct ExternalSigner {
 }
 
 impl ExternalSigner {
-    pub fn from_file(path: &str) -> Result<Self> {
+    pub fn from_file(path: &str) -> openpgp::Result<Self> {
         let tpk = TPK::from_file(path)?;
         let (_sig, _rev, key) = tpk
             .keys_valid()
@@ -31,7 +43,11 @@ impl ExternalSigner {
 
         let userid = match tpk.userids().next() {
             Some(userid) => userid.userid(),
-            None => return Err(Error::InvalidArgument(format!("{} has no user ID", path)).into()),
+            None => {
+                return Err(
+                    openpgp::Error::InvalidArgument(format!("{} has no user ID", path)).into(),
+                )
+            }
         };
         let userid = match String::from_utf8(userid.value().to_vec()) {
             Ok(value) => value,
@@ -51,24 +67,32 @@ impl crypto::Signer for ExternalSigner {
     }
 
     /// Creates a signature over the `digest` produced by `hash_algo`.
-    fn sign(&mut self, _hash_algo: HashAlgorithm, digest: &[u8]) -> Result<mpis::Signature> {
-        use subprocess::{Exec, Redirection};
-        let mut p = Exec::cmd("./src/trezor-gpg-sign.py")
-            .arg(&self.userid)
-            .stdin(Redirection::Pipe)
-            .stdout(Redirection::Pipe)
-            .popen()?;
-
-        let (out, _err) = p.communicate_bytes(Some(digest))?;
-        let sig = out.expect("no stdout");
-        if sig.len() != 64 {
-            return Err(
-                Error::BadSignature(format!("invalid signature size: {}", sig.len())).into(),
-            );
+    fn sign(
+        &mut self,
+        _hash_algo: HashAlgorithm,
+        digest: &[u8],
+    ) -> openpgp::Result<mpis::Signature> {
+        let mut trezor = trezor::unique(false)?;
+        trezor.init_device()?;
+        let mut identity = trezor::protos::IdentityType::new();
+        identity.set_host(self.userid.to_owned());
+        identity.set_proto("gpg".to_owned());
+        let sig = handle_interaction(trezor.sign_identity(
+            identity,
+            digest.to_owned(),
+            "ed25519".to_owned(),
+        )?)?;
+        if sig.len() != 65 {
+            return Err(openpgp::Error::BadSignature(format!(
+                "invalid signature size: {}",
+                sig.len()
+            ))
+            .into());
         }
+        assert_eq!(sig[0], 0);
         Ok(mpis::Signature::EdDSA {
-            r: mpis::MPI::new(&sig[..32]),
-            s: mpis::MPI::new(&sig[32..]),
+            r: mpis::MPI::new(&sig[1..33]),
+            s: mpis::MPI::new(&sig[33..]),
         })
     }
 }

@@ -6,4 +6,4 @@ edition = "2018"
 
 [dependencies]
 sequoia-openpgp = "0.7"
-subprocess = "0.1"
+trezor = { git = "https://github.com/romanz/rust-trezor-api" }
