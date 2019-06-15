@@ -15,8 +15,7 @@ def main():
     identity_proto = IdentityType(proto='gpg', host=host)
     client = TrezorClient(transport=transport, ui=ClickUI(), state=None)
 
-    digest = sys.stdin.buffer.read()
-    assert len(digest) == 64, len(digest)
+    digest = sys.stdin.buffer.read(32)
 
     result = sign_identity(
         client=client,

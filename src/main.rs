@@ -1,4 +1,4 @@
-/// Use TREZOR for ed25519 signatures.
+/// Use TREZOR for ECDSA OpenPGP signatures.
 use std::env;
 use std::io;
 
@@ -79,8 +79,8 @@ impl crypto::Signer for ExternalSigner {
         identity.set_proto("gpg".to_owned());
         let sig = handle_interaction(trezor.sign_identity(
             identity,
-            digest.to_owned(),
-            "ed25519".to_owned(),
+            digest[..32].to_owned(),
+            "nist256p1".to_owned(),
         )?)?;
         if sig.len() != 65 {
             return Err(openpgp::Error::BadSignature(format!(
@@ -89,8 +89,7 @@ impl crypto::Signer for ExternalSigner {
             ))
             .into());
         }
-        assert_eq!(sig[0], 0);
-        Ok(mpis::Signature::EdDSA {
+        Ok(mpis::Signature::ECDSA {
             r: mpis::MPI::new(&sig[1..33]),
             s: mpis::MPI::new(&sig[33..]),
         })
