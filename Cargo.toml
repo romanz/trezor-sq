@@ -5,5 +5,5 @@ authors = ["Roman Zeyde <me@romanzey.de>"]
 edition = "2018"
 
 [dependencies]
-sequoia-openpgp = "0.7"
+sequoia-openpgp = "0.8"
 trezor = { git = "https://github.com/romanz/rust-trezor-api" }
