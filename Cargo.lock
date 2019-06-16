@@ -1176,6 +1176,7 @@ dependencies = [
 name = "trezor-sq"
 version = "0.0.1"
 dependencies = [
+ "clap 2.33.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "sequoia-openpgp 0.8.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "trezor 0.0.1 (git+https://github.com/romanz/rust-trezor-api)",
 ]

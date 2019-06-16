@@ -3,6 +3,7 @@ use std::io;
 /// Use TREZOR for OpenPGP signatures.
 use std::path::Path;
 
+extern crate clap;
 extern crate sequoia_openpgp as openpgp;
 extern crate trezor;
 
@@ -86,7 +87,7 @@ impl crypto::Signer for ExternalSigner {
             PublicKeyAlgorithm::ECDSA => {
                 digest.split_off(32); // Keep only the first 256 bits.
                 "nist256p1"
-            },
+            }
             _ => {
                 return Err(
                     openpgp::Error::UnsupportedPublicKeyAlgorithm(self.sigkey.pk_algo()).into(),
@@ -116,31 +117,73 @@ impl crypto::Signer for ExternalSigner {
 }
 
 fn main() {
-    let home_dir: OsString = std::env::var_os("GNUPGHOME").expect("GNUPGHOME is not set");
-    let pubkey_path = std::path::Path::new(&home_dir).join("pubkey.asc");
+    let matches = clap::App::new("OpenPGP git wrapper for TREZOR")
+        .arg(
+            clap::Arg::with_name("userid")
+                .short("u")
+                .value_name("USERID")
+                .help("User ID for signature")
+                .takes_value(true),
+        )
+        .arg(
+            clap::Arg::with_name("detached")
+                .short("b")
+                .help("Make a detached signature"),
+        )
+        .arg(
+            clap::Arg::with_name("sign")
+                .short("s")
+                .help("Sign message from stdin"),
+        )
+        .arg(
+            clap::Arg::with_name("armor")
+                .short("a")
+                .help("Output armored signature"),
+        )
+        .arg(
+            clap::Arg::with_name("status_fd")
+                .long("status-fd")
+                .default_value("2") // stderr
+                .takes_value(true)
+                .help("File descriptor for status messages"),
+        )
+        .get_matches();
 
-    let mut signer = ExternalSigner::from_file(&pubkey_path, "Roman Zeyde <me@romanzey.de>")
-        .expect("no ExternalSigner signer");
-    let signers: Vec<&mut dyn crypto::Signer> = vec![&mut signer];
+    if matches.is_present("sign") {
+        let userid = matches.value_of("userid").expect("missing USERID");
+        assert!(matches.is_present("detached"));
+        assert!(matches.is_present("armor"));
+        assert_eq!(matches.value_of("status_fd").unwrap(), "2");
 
-    // Compose a writer stack corresponding to the output format and
-    // packet structure we want.  First, we want the output to be
-    // ASCII armored.
-    let sink = armor::Writer::new(io::stdout(), armor::Kind::Message, &[])
-        .expect("Failed to create an armored writer.");
+        let home_dir: OsString = std::env::var_os("GNUPGHOME").expect("GNUPGHOME is not set");
+        let pubkey_path = std::path::Path::new(&home_dir).join("pubkey.asc");
 
-    // Now, create a signer that emits a signature.
-    let signer = stream::Signer::new(stream::Message::new(sink), signers, None)
-        .expect("Failed to create signer");
+        let mut signer = ExternalSigner::from_file(&pubkey_path, userid)
+            .expect("no ExternalSigner signer");
+        let signers: Vec<&mut dyn crypto::Signer> = vec![&mut signer];
 
-    // Then, create a literal writer to wrap the data in a literal
-    // message packet.
-    let mut literal = stream::LiteralWriter::new(signer, DataFormat::Binary, None, None)
-        .expect("Failed to create literal writer");
+        // Compose a writer stack corresponding to the output format and
+        // packet structure we want.  First, we want the output to be
+        // ASCII armored.
+        let sink = armor::Writer::new(io::stdout(), armor::Kind::Message, &[])
+            .expect("Failed to create an armored writer.");
 
-    // Copy all the data.
-    io::copy(&mut io::stdin(), &mut literal).expect("Failed to sign data");
+        // Now, create a signer that emits a signature.
+        let signer = stream::Signer::new(stream::Message::new(sink), signers, None)
+            .expect("Failed to create signer");
 
-    // Finally, teardown the stack to ensure all the data is written.
-    literal.finalize().expect("Failed to write data");
+        // Then, create a literal writer to wrap the data in a literal
+        // message packet.
+        let mut literal = stream::LiteralWriter::new(signer, DataFormat::Binary, None, None)
+            .expect("Failed to create literal writer");
+
+        // Copy all the data.
+        io::copy(&mut io::stdin(), &mut literal).expect("Failed to sign data");
+
+        // Finally, teardown the stack to ensure all the data is written.
+        literal.finalize().expect("Failed to write data");
+        return;
+    }
+
+    panic!("unsupported command: {:?}", matches);
 }
