@@ -4,8 +4,13 @@ use std::io;
 use std::path::Path;
 
 extern crate clap;
+extern crate fern;
 extern crate sequoia_openpgp as openpgp;
+extern crate subprocess;
 extern crate trezor;
+
+#[macro_use]
+extern crate log;
 
 use openpgp::armor;
 use openpgp::constants::{HashAlgorithm, PublicKeyAlgorithm};
@@ -136,6 +141,12 @@ fn main() {
                 .help("Sign message from stdin"),
         )
         .arg(
+            clap::Arg::with_name("verify")
+                .long("verify")
+                .takes_value(true)
+                .help("Verify signature"),
+        )
+        .arg(
             clap::Arg::with_name("armor")
                 .short("a")
                 .help("Output armored signature"),
@@ -143,20 +154,30 @@ fn main() {
         .arg(
             clap::Arg::with_name("status_fd")
                 .long("status-fd")
-                .default_value("2") // stderr
                 .takes_value(true)
                 .help("File descriptor for status messages"),
         )
+        .arg(
+            clap::Arg::with_name("keyid_format")
+                .long("keyid-format")
+                .default_value("long")
+                .takes_value(true)
+                .help("TODO"),
+        )
+        .arg(clap::Arg::with_name("file").index(1).required(false))
         .get_matches();
+
+    let home_dir: OsString = std::env::var_os("GNUPGHOME").expect("GNUPGHOME is not set");
+    let pubkey_path = std::path::Path::new(&home_dir).join("trezor.asc");
+    trace!("pubkey_path = {:?}", pubkey_path);
 
     if matches.is_present("sign") {
         let userid = matches.value_of("userid").expect("missing USERID");
+        trace!("userid = {:?}", userid);
+
         assert!(matches.is_present("detached"));
         assert!(matches.is_present("armor"));
-        assert_eq!(matches.value_of("status_fd").unwrap(), "2");
-
-        let home_dir: OsString = std::env::var_os("GNUPGHOME").expect("GNUPGHOME is not set");
-        let pubkey_path = std::path::Path::new(&home_dir).join("trezor.asc");
+        assert_eq!(matches.value_of("status_fd").unwrap_or("2"), "2"); // stderr
 
         let mut signer =
             ExternalSigner::from_file(&pubkey_path, userid).expect("no ExternalSigner signer");
@@ -175,6 +196,28 @@ fn main() {
         // https://github.com/git/git/blob/cd69ec8cde54af1817630331fc441f493866f0d4/gpg-interface.c#L318
         eprintln!("\n[GNUPG:] SIG_CREATED ");
         return;
+    }
+    if matches.is_present("verify") {
+        assert_eq!(matches.value_of("status_fd").unwrap_or("1"), "1"); // stdout
+        assert_eq!(matches.value_of("file").expect("missing input file"), "-"); // stdin
+        let sigfile = matches.value_of("verify").expect("missing signature");
+
+        let result = subprocess::Exec::cmd("/home/roman/Code/sequoia/target/debug/sqv")
+            .arg("--keyring")
+            .arg(&pubkey_path)
+            .arg(sigfile)
+            .arg("/dev/stdin") // input file (whose signature we are verifying)
+            .capture()
+            .expect("Popen failed");
+        if result.success() {
+            println!("\n[GNUPG:] GOODSIG ");
+            eprint!("✓ ");
+            std::process::exit(0);
+        } else {
+            println!("\n[GNUPG:] BADSIG ");
+            eprint!("✗ ");
+            std::process::exit(1);
+        }
     }
 
     panic!("unsupported command: {:?}", matches);
