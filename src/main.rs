@@ -1,13 +1,13 @@
-/// Use TREZOR for ECDSA OpenPGP signatures.
-use std::env;
+use std::ffi::OsString;
 use std::io;
+/// Use TREZOR for OpenPGP signatures.
+use std::path::Path;
 
 extern crate sequoia_openpgp as openpgp;
 extern crate trezor;
 
 use openpgp::armor;
-use openpgp::constants::DataFormat;
-use openpgp::constants::HashAlgorithm;
+use openpgp::constants::{DataFormat, HashAlgorithm, PublicKeyAlgorithm};
 use openpgp::crypto::{self, mpis};
 use openpgp::packet::Key;
 use openpgp::parse::Parse;
@@ -33,29 +33,32 @@ struct ExternalSigner {
 }
 
 impl ExternalSigner {
-    pub fn from_file(path: &str) -> openpgp::Result<Self> {
+    pub fn from_file(path: &Path, user_id: &str) -> openpgp::Result<Self> {
         let tpk = TPK::from_file(path)?;
+        if tpk
+            .userids()
+            .find(|u| u.userid().value() == user_id.as_bytes())
+            .is_none()
+        {
+            let msg = format!("{:?} has no user ID {}", path, user_id);
+            return Err(openpgp::Error::UnsupportedTPK(msg).into());
+        }
         let (_sig, _rev, key) = tpk
             .keys_valid()
             .signing_capable()
             .next()
             .expect("no valid signing key");
-
-        let userid = match tpk.userids().next() {
-            Some(userid) => userid.userid(),
-            None => {
-                return Err(
-                    openpgp::Error::InvalidArgument(format!("{} has no user ID", path)).into(),
-                )
-            }
-        };
-        let userid = match String::from_utf8(userid.value().to_vec()) {
-            Ok(value) => value,
-            Err(err) => return Err(err.into()),
-        };
+        let userid_str = String::from_utf8(
+            tpk.userids()
+                .next() // Primary user ID should be the first one.
+                .expect("no user IDs")
+                .userid()
+                .value()
+                .to_vec(),
+        )?;
         Ok(ExternalSigner {
             sigkey: key.clone(),
-            userid,
+            userid: userid_str,
         })
     }
 }
@@ -69,19 +72,35 @@ impl crypto::Signer for ExternalSigner {
     /// Creates a signature over the `digest` produced by `hash_algo`.
     fn sign(
         &mut self,
-        _hash_algo: HashAlgorithm,
+        hash_algo: HashAlgorithm,
         digest: &[u8],
     ) -> openpgp::Result<mpis::Signature> {
-        let mut trezor = trezor::unique(false)?;
-        trezor.init_device()?;
+        match hash_algo {
+            HashAlgorithm::SHA256 | HashAlgorithm::SHA512 => (),
+            _ => return Err(openpgp::Error::UnsupportedHashAlgorithm(hash_algo).into()),
+        }
+        let mut digest = digest.to_vec();
+        assert!(digest.len() >= 32);
+        let curve = match self.sigkey.pk_algo() {
+            PublicKeyAlgorithm::EdDSA => "ed25519",
+            PublicKeyAlgorithm::ECDSA => {
+                digest.split_off(32); // Keep only the first 256 bits.
+                "nist256p1"
+            },
+            _ => {
+                return Err(
+                    openpgp::Error::UnsupportedPublicKeyAlgorithm(self.sigkey.pk_algo()).into(),
+                )
+            }
+        };
+
         let mut identity = trezor::protos::IdentityType::new();
         identity.set_host(self.userid.to_owned());
         identity.set_proto("gpg".to_owned());
-        let sig = handle_interaction(trezor.sign_identity(
-            identity,
-            digest[..32].to_owned(),
-            "nist256p1".to_owned(),
-        )?)?;
+
+        let mut trezor = trezor::unique(false)?;
+        trezor.init_device()?;
+        let sig = handle_interaction(trezor.sign_identity(identity, digest, curve.to_owned())?)?;
         if sig.len() != 65 {
             return Err(openpgp::Error::BadSignature(format!(
                 "invalid signature size: {}",
@@ -97,11 +116,11 @@ impl crypto::Signer for ExternalSigner {
 }
 
 fn main() {
-    let pubkey_path = env::args()
-        .skip(1)
-        .next()
-        .expect("missing pubkey file path");
-    let mut signer = ExternalSigner::from_file(&pubkey_path).expect("no ExternalSigner signer");
+    let home_dir: OsString = std::env::var_os("GNUPGHOME").expect("GNUPGHOME is not set");
+    let pubkey_path = std::path::Path::new(&home_dir).join("pubkey.asc");
+
+    let mut signer = ExternalSigner::from_file(&pubkey_path, "Roman Zeyde <me@romanzey.de>")
+        .expect("no ExternalSigner signer");
     let signers: Vec<&mut dyn crypto::Signer> = vec![&mut signer];
 
     // Compose a writer stack corresponding to the output format and
