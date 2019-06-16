@@ -8,7 +8,7 @@ extern crate sequoia_openpgp as openpgp;
 extern crate trezor;
 
 use openpgp::armor;
-use openpgp::constants::{DataFormat, HashAlgorithm, PublicKeyAlgorithm};
+use openpgp::constants::{HashAlgorithm, PublicKeyAlgorithm};
 use openpgp::crypto::{self, mpis};
 use openpgp::packet::Key;
 use openpgp::parse::Parse;
@@ -156,32 +156,24 @@ fn main() {
         assert_eq!(matches.value_of("status_fd").unwrap(), "2");
 
         let home_dir: OsString = std::env::var_os("GNUPGHOME").expect("GNUPGHOME is not set");
-        let pubkey_path = std::path::Path::new(&home_dir).join("pubkey.asc");
+        let pubkey_path = std::path::Path::new(&home_dir).join("trezor.asc");
 
-        let mut signer = ExternalSigner::from_file(&pubkey_path, userid)
-            .expect("no ExternalSigner signer");
+        let mut signer =
+            ExternalSigner::from_file(&pubkey_path, userid).expect("no ExternalSigner signer");
         let signers: Vec<&mut dyn crypto::Signer> = vec![&mut signer];
 
-        // Compose a writer stack corresponding to the output format and
-        // packet structure we want.  First, we want the output to be
-        // ASCII armored.
-        let sink = armor::Writer::new(io::stdout(), armor::Kind::Message, &[])
+        let sink = armor::Writer::new(io::stdout(), armor::Kind::Signature, &[])
             .expect("Failed to create an armored writer.");
 
-        // Now, create a signer that emits a signature.
-        let signer = stream::Signer::new(stream::Message::new(sink), signers, None)
-            .expect("Failed to create signer");
+        let mut signer = stream::Signer::detached(stream::Message::new(sink), signers, None)
+            .expect("Failed to create detached signer");
 
-        // Then, create a literal writer to wrap the data in a literal
-        // message packet.
-        let mut literal = stream::LiteralWriter::new(signer, DataFormat::Binary, None, None)
-            .expect("Failed to create literal writer");
+        io::copy(&mut io::stdin(), &mut signer).expect("Failed to sign data");
 
-        // Copy all the data.
-        io::copy(&mut io::stdin(), &mut literal).expect("Failed to sign data");
+        signer.finalize().expect("Failed to write data");
 
-        // Finally, teardown the stack to ensure all the data is written.
-        literal.finalize().expect("Failed to write data");
+        // https://github.com/git/git/blob/cd69ec8cde54af1817630331fc441f493866f0d4/gpg-interface.c#L318
+        eprintln!("\n[GNUPG:] SIG_CREATED ");
         return;
     }
 
